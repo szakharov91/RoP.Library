@@ -1,1 +1,4 @@
-<Solution />
+<Solution>
+  <Project Path="RoP.Library/RoP.Library.csproj" />
+  <Project Path="RoP.Tests/RoP.Tests.csproj" />
+</Solution>
