@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/Directory.Packages.props', '**/Directory.Build.props', '**/*.csproj', '**/*.slnx') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore RoP.slnx
+
+      - name: Build
+        run: dotnet build RoP.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: >
+          dotnet test RoP.slnx
+          --configuration Release
+          --no-build
+          --logger "trx;LogFileName=test-results.trx"
+          --collect:"XPlat Code Coverage"
+          --results-directory ./TestResults
+
+      - name: Add dotnet tools to PATH
+        if: always()
+        run: echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      - name: Generate coverage report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet tool install --global dotnet-reportgenerator-globaltool
+          shopt -s globstar nullglob
+          matches=(TestResults/**/coverage.cobertura.xml)
+          if [ "${#matches[@]}" -eq 0 ]; then
+            echo "No coverage.cobertura.xml found under TestResults; skipping ReportGenerator."
+            mkdir -p CoverageReport
+          else
+            reportgenerator \
+              -reports:"TestResults/**/coverage.cobertura.xml" \
+              -targetdir:CoverageReport \
+              -reporttypes:"HtmlInline;MarkdownSummaryGitHub;Cobertura"
+          fi
+
+      - name: Append coverage to job summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f CoverageReport/SummaryGithub.md ]]; then
+            cat CoverageReport/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"
+            echo "Coverage summary was not generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Test report (TRX)
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: Test Results
+          path: TestResults/**/*.trx
+          reporter: dotnet-trx
+          fail-on-error: false
+
+      - name: Upload test results (TRX)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/**/*.trx
+          if-no-files-found: warn
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: CoverageReport/**
+          if-no-files-found: warn
